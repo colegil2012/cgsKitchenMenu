@@ -9,24 +9,34 @@ const props = defineProps<{section: MenuSection}>();
 const heading = computed(() => props.section.categoryName);
 
 /**
- * Full option list per item, grouped by option group. Every available choice
- * is listed; the price delta is appended only when nonzero (e.g.
- * "Beer cheese +$1", "No meat -$1"). 86'd choices and groups are omitted so
- * the board only advertises what's actually orderable.
+ * Full option list per item, grouped by option group. Every choice is listed;
+ * the price delta is appended only when nonzero (e.g. "Beer cheese +$1",
+ * "No meat -$1"). 86'd choices and groups are kept but flagged unavailable so
+ * the template can strike them through, mirroring the item-level sold-out
+ * treatment rather than silently dropping them.
  */
+interface OptionChoiceLine {
+  label: string;
+  delta: string;
+  available: boolean;
+}
 interface OptionLine {
   groupLabel: string;
-  choices: {label: string; delta: string}[];
+  available: boolean;
+  choices: OptionChoiceLine[];
 }
 
 function optionLines(item: MenuItemView): OptionLine[] {
   const out: OptionLine[] = [];
   for (const g of item.optionGroups) {
-    if (!g.available) continue;
-    const choices = g.choices
-      .filter((c) => c.available)
-      .map((c) => ({label: c.label, delta: choiceDelta(c)}));
-    if (choices.length) out.push({groupLabel: g.label, choices});
+    const choices = g.choices.map((c) => ({
+      label: c.label,
+      delta: choiceDelta(c),
+      available: c.available,
+    }));
+    if (choices.length) {
+      out.push({groupLabel: g.label, available: g.available, choices});
+    }
   }
   return out;
 }
@@ -36,33 +46,50 @@ function optionLines(item: MenuItemView): OptionLine[] {
   <section class="sec">
     <h2 class="sec__title">{{ heading }}</h2>
     <ul class="sec__list">
-      <li v-for="it in section.items" :key="it.id" class="item">
+      <li
+        v-for="it in section.items"
+        :key="it.id"
+        class="item"
+        :class="{'item--out': !it.available}"
+      >
         <div class="item__row">
           <span class="item__name">
-            {{ it.name }}
+            <span class="item__label">{{ it.name }}</span>
             <span
-              v-if="it.badgeLabel"
+              v-if="it.badgeLabel && it.available"
               class="badge"
               :data-color="it.badgeColor || 'default'"
               >{{ it.badgeLabel }}</span
             >
+            <span v-if="!it.available" class="soldout">Sold out</span>
           </span>
           <span class="item__dots" aria-hidden="true" />
           <span class="item__price">{{ displayPrice(it) }}</span>
         </div>
         <p v-if="it.description" class="item__desc">{{ it.description }}</p>
-        <div v-if="optionLines(it).length" class="item__opts">
-          <p v-for="line in optionLines(it)" :key="line.groupLabel" class="optline">
+        <div v-if="it.available && optionLines(it).length" class="item__opts">
+          <p
+            v-for="line in optionLines(it)"
+            :key="line.groupLabel"
+            class="optline"
+            :class="{
+              'optline--out':
+                !line.available || line.choices.every((c) => !c.available),
+            }"
+          >
             <span class="optline__group">{{ line.groupLabel }}:</span>
-            <span
+            <template
               v-for="(c, i) in line.choices"
               :key="c.label"
-              class="optline__choice"
             >
-              {{ c.label
-              }}<span v-if="c.delta" class="optline__delta"> {{ c.delta }}</span
-              ><span v-if="i < line.choices.length - 1">, </span>
-            </span>
+              <span
+                class="optline__choice"
+                :class="{'optline__choice--out': !c.available}"
+              >
+                {{ c.label
+                }}<span v-if="c.delta" class="optline__delta"> {{ c.delta }}</span>
+              </span><span v-if="i < line.choices.length - 1">, </span>
+            </template>
           </p>
         </div>
       </li>
@@ -92,6 +119,32 @@ function optionLines(item: MenuItemView): OptionLine[] {
   display: flex;
   flex-direction: column;
   gap: 1.15rem;
+}
+.item {
+  transition: opacity 0.3s ease;
+}
+/* 86'd: stays on the board, dimmed, with the name + price struck through. */
+.item--out {
+  opacity: 0.4;
+}
+.item--out .item__label,
+.item--out .item__price {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+.soldout {
+  display: inline-block;
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #c0563f;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  margin-left: 0.5rem;
+  vertical-align: middle;
 }
 .item__row {
   display: flex;
@@ -173,5 +226,21 @@ function optionLines(item: MenuItemView): OptionLine[] {
   font-weight: 600;
   color: var(--ink);
   white-space: nowrap;
+}
+/* 86'd choice: struck through and faded, but the comma separators stay clean
+   so the line still reads as a list. */
+.optline__choice--out {
+  opacity: 0.55;
+}
+.optline__choice--out .optline__delta,
+.optline__choice--out {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+/* When the whole group is unavailable, dim its label too. */
+.optline--out .optline__group {
+  opacity: 0.55;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
 }
 </style>

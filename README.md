@@ -3,9 +3,9 @@
 Standalone customer-facing menu board for the food truck, built as a static web
 app that runs in the **same Chromium-kiosk-on-a-Pi** pattern as the driver unit
 and the POS. It is a **read-only** display: a screen facing customers showing
-the orderable menu, grouped by category, with 86'd items hidden automatically.
-It does not take orders or write anything back. Built for a **Pi Zero 2 W**
-driving a TV or large screen.
+the full menu, grouped by category, with each item's options listed and 86'd
+items and choices shown struck through. It does not take orders or write
+anything back. Built for a **Pi Zero 2 W** driving a TV or large screen.
 
 ## Why this architecture
 
@@ -16,12 +16,16 @@ provisioning playbook. The board is **standalone**: it only consumes cgsKitchen
 endpoints and writes nothing back. New data needs become new endpoints in
 cgsKitchen, not coupling into this app.
 
-It reads the **same authed menu endpoint the POS reads** (`GET /api/menu/menu`)
-rather than a separate public feed — the old keyless `/api/public/menu` was
-removed when the menu read was consolidated onto the API-key filter chain, so
-this board carries the key like every other device. One menu, one source of
-truth: 86 an item on the POS and it disappears from this board on the next
-poll, with no second feed to keep in sync.
+It reads cgsKitchen's **full** menu endpoint (`GET /api/menu/all`) on the
+API-key filter chain, the same chain the POS uses (the old keyless
+`/api/public/menu` was removed when the menu read was consolidated behind the
+key, so this board carries the key like every other device). It deliberately
+uses `/api/menu/all` rather than the POS's orderable `/api/menu/menu`: the
+latter is backed by `findAvailable` and pre-filters 86'd entries, so it could
+never drive the sold-out styling. `/api/menu/all` returns everything —
+including 86'd items and choices — and the board renders the unavailable ones
+struck through. One menu, one source of truth: 86 an item on the POS and it
+shows as sold out here on the next poll, with no second feed to keep in sync.
 
 ## Authentication
 
@@ -37,32 +41,44 @@ All endpoints are on the cgsKitchen backend.
 
 | Action | Endpoint | On drop |
 |---|---|---|
-| Load orderable menu | `GET /api/menu/menu` | last-known menu stays up; polls when online |
+| Load full menu (incl. 86'd) | `GET /api/menu/all` | last-known menu stays up; polls when online |
 
-This is the same endpoint the POS uses for its orderable menu, so the customer
-board and the cashier always see the same items. No new server endpoints are
-required.
+This is cgsKitchen's full-menu read on the same API-key chain the POS uses, so
+the customer board and the cashier draw from one source. No new server
+endpoints are required.
 
 ## Features
 
 ### The board
-Items from `GET /api/menu/menu` are grouped by category into a two-column
+Items from `GET /api/menu/all` are grouped by category into a two-column
 editorial layout — serif display headings, dotted price leaders between item
-and price, an optional description line per item. Polled every 30s; menus
-change far less often than orders (mostly via 86'ing), so a slow poll keeps the
-screen current without hammering the backend.
+and price, an optional description line per item, and the item's full option
+list beneath. Categories and items are ordered by the backend's `sortOrder`,
+so the truck controls layout from cgsKitchen rather than per-Pi config. Polled
+every 30s; menus change far less often than orders (mostly via 86'ing), so a
+slow poll keeps the screen current without hammering the backend.
+
+### Option lists
+Each item shows its option groups (Protein, Cheese, Veggies, Sauces, …) with
+every choice listed. A price delta is appended only when nonzero — e.g.
+`Cheese: Cheddar, Swiss, Beer cheese +$1, No cheese`. Free choices show plain;
+discounts show a minus (`No meat -$1`). This advertises the build-your-own
+options without duplicating the POS's full picker.
 
 ### 86-aware (the point)
-Any item with `available: false` is **filtered out before render**, so 86'ing
-from the POS removes it from the customer's view automatically — no stale
-"sold out" rows, the item simply isn't on the board. Un-86 it and it returns on
-the next poll. This is the whole reason the board reads the live endpoint
-instead of a static menu image.
+The board shows the **full** menu and marks what's out rather than hiding it.
+An item with `available: false` stays in place, dimmed, with its name and price
+struck through and a small red "Sold out" tag (its badge and options are hidden
+while out). An individual 86'd **choice** — say Beer cheese sells out — stays in
+its option line struck through, so customers still see it exists but know it's
+unavailable. Un-86 on the POS and it returns to normal on the next poll. This
+is the whole reason the board reads `/api/menu/all` instead of the filtered
+orderable endpoint.
 
-### Category ordering
-Categories render in a configurable order via `VITE_CATEGORY_ORDER` (lowercase,
-comma-separated, e.g. `tacos,plates,sides,drinks`); any category not listed
-falls to the end alphabetically. Within a category, items are sorted by name.
+### Badges
+In-stock items carry their backend badge (`Most Loved`, `Top Seller`, `New`)
+in the matching accent color (gold / grass / sea). Badges are hidden on
+sold-out items.
 
 ### Connectivity behaviour
 On a drop the board keeps the last good menu on screen rather than blanking the
@@ -81,11 +97,12 @@ front of a customer.
 
 ```
 src/
-  api/client.ts            fetch wrapper (X-API-Key) + fetchMenu
-  lib/config.ts            Vite env config + POLL_MS + category order + title
-  types/menu.ts            MenuItemView contract + MenuSection shape
-  components/MenuSection.vue   one category heading + its item rows
-  App.vue                  polls menu, groups + orders categories, hides 86'd
+  api/client.ts            fetch wrapper (X-API-Key) + fetchMenu (/api/menu/all)
+  lib/config.ts            Vite env config (base url, key, poll, title)
+  lib/format.ts            centsToDollars, displayPrice, choiceDelta
+  types/menu.ts            MenuItemView/OptionGroup/MenuChoice + MenuSection
+  components/MenuSection.vue   category heading + item rows, options, sold-out
+  App.vue                  polls menu, groups by category, orders by sortOrder
   main.ts                  entry
   styles.css               theme tokens + global kiosk styles (cursor: none)
 ```
@@ -112,8 +129,10 @@ cgsKitchen run config. `npm run build` typechecks (vue-tsc) then emits `dist/`.
 - `VITE_API_KEY` — must match backend `app.api-key`
 - `VITE_POLL_MS` — menu refresh interval (default 30000)
 - `VITE_BOARD_TITLE` — heading text (default `Menu`)
-- `VITE_CATEGORY_ORDER` — lowercase comma-separated order, e.g.
-  `tacos,plates,sides,drinks`; unlisted categories fall to the end alphabetically
+
+Category and item order is **not** configured here — it follows the backend's
+`sortOrder`, so reordering the menu is done in cgsKitchen and reflected on the
+board on the next poll.
 
 ## Deploy to the Pi kiosk
 

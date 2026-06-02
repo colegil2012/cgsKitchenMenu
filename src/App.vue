@@ -4,6 +4,7 @@ import {fetchMenu} from './api/client';
 import {POLL_MS, BOARD_TITLE} from './lib/config';
 import type {MenuItemView, MenuSection} from './types/menu';
 import MenuSectionView from './components/MenuSection.vue';
+import logoUrl from './assets/logo.png';
 
 const items = ref<MenuItemView[]>([]);
 const online = ref(true);
@@ -13,15 +14,14 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let inFlight: AbortController | null = null;
 
 /**
- * Group available items by category and order everything by the backend's
- * sortOrder so the truck controls layout from cgsKitchen, not per-Pi config.
- * Only in-stock items are shown to customers; 86'd items vanish entirely.
- * A category whose items are all 86'd drops off the board too.
+ * Group items by category and order everything by the backend's sortOrder so
+ * the truck controls layout from cgsKitchen, not per-Pi config. 86'd items
+ * are NOT hidden — they stay on the board rendered dimmed and struck through
+ * (see MenuSection), so customers see the full menu and know what's sold out.
  */
 const sections = computed<MenuSection[]>(() => {
   const groups = new Map<string, MenuSection>();
   for (const it of items.value) {
-    if (!it.available) continue;
     let sec = groups.get(it.categoryId);
     if (!sec) {
       sec = {
@@ -72,7 +72,7 @@ onUnmounted(() => {
 <template>
   <div class="menu">
     <header class="menu__head">
-      <h1 class="menu__brand">CGS</h1>
+      <img :src="logoUrl" class="menu__logo" alt="Logo" />  
       <p class="menu__title">{{ BOARD_TITLE }}</p>
       <span
         v-if="!online && loaded"
@@ -109,19 +109,18 @@ onUnmounted(() => {
 }
 .menu__head {
   display: flex;
+  flex-direction: column;
   align-items: baseline;
   gap: 1.2rem;
   margin-bottom: 2.2rem;
   padding-bottom: 1rem;
   border-bottom: 3px double rgba(214, 178, 122, 0.4);
 }
-.menu__brand {
-  font-family: var(--font-display);
-  font-size: 3.2rem;
-  font-weight: 600;
-  color: var(--ink);
-  margin: 0;
-  letter-spacing: 0.04em;
+.menu__logo {
+  max-height: 250px;
+  width: auto;
+  align-self: center;
+  display: block;
 }
 .menu__title {
   font-family: var(--font-body);
@@ -130,6 +129,7 @@ onUnmounted(() => {
   letter-spacing: 0.4em;
   text-transform: uppercase;
   color: var(--accent);
+  align-self: center;
   margin: 0;
 }
 .menu__stale {

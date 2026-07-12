@@ -1,4 +1,4 @@
-# /etc/systemd/system/cgs-menu.service
+# /etc/systemd/system/druid-menu.service
 #
 # The Expo board, drawn straight to the framebuffer (KMS/DRM).
 # NO labwc, NO Wayland compositor, NO browser. Just Python + SDL2.

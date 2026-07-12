@@ -1,191 +1,191 @@
-# CGS Kitchen Menu Board — Vue display for cgsKitchen
+# cgsKitchenMenu
 
-Standalone customer-facing menu board for the food truck, built as a static web
-app that runs in the **same Chromium-kiosk-on-a-Pi** pattern as the driver unit
-and the POS. It is a **read-only** display: a screen facing customers showing
-the full menu, grouped by category, with each item's options listed and 86'd
-items and choices shown struck through. It does not take orders or write
-anything back. Built for a **Pi Zero 2 W** driving a TV or large screen.
+Customer-facing menu board for the CGS Kitchen food truck. Runs on a **Raspberry Pi Zero 2 W** wired to an HDMI TV, and shows the live menu — prices, options, and what's 86'd — straight from the backend.
 
-## Why this architecture
+It is a read-only display. The truck controls the menu entirely from cgsKitchen; this board just reflects it.
 
-The driver kiosk and the POS already run Chromium fullscreen on labwc, loading
-a local web app. This board reuses that exact stack — another Pi provisioned
-the same way, only the launched URL differs. No new device class, one
-provisioning playbook. The board is **standalone**: it only consumes cgsKitchen
-endpoints and writes nothing back. New data needs become new endpoints in
-cgsKitchen, not coupling into this app.
+---
 
-It reads cgsKitchen's **full** menu endpoint (`GET /api/menu/all`) on the
-API-key filter chain, the same chain the POS uses (the old keyless
-`/api/public/menu` was removed when the menu read was consolidated behind the
-key, so this board carries the key like every other device). It deliberately
-uses `/api/menu/all` rather than the POS's orderable `/api/menu/menu`: the
-latter is backed by `findAvailable` and pre-filters 86'd entries, so it could
-never drive the sold-out styling. `/api/menu/all` returns everything —
-including 86'd items and choices — and the board renders the unavailable ones
-struck through. One menu, one source of truth: 86 an item on the POS and it
-shows as sold out here on the next poll, with no second feed to keep in sync.
+## Architecture
 
-## Authentication
+**Python + Pillow, drawing straight to the Linux framebuffer (`/dev/fb0`).**
 
-Every request sends the `X-API-Key` header (set from `VITE_API_KEY`, which must
-match the backend `app.api-key`). The menu read lives on the backend's API-key
-filter chain (`/api/**`), same as the POS — there is no public, keyless
-endpoint. Vite inlines `VITE_*` vars at build time, so changing `.env` requires
-a rebuild, not just a refresh.
-
-## What it talks to
-
-All endpoints are on the cgsKitchen backend.
-
-| Action | Endpoint | On drop |
-|---|---|---|
-| Load full menu (incl. 86'd) | `GET /api/menu/all` | last-known menu stays up; polls when online |
-
-This is cgsKitchen's full-menu read on the same API-key chain the POS uses, so
-the customer board and the cashier draw from one source. No new server
-endpoints are required.
-
-## Features
-
-### The board
-Items from `GET /api/menu/all` are grouped by category into a two-column
-editorial layout — serif display headings, dotted price leaders between item
-and price, an optional description line per item, and the item's full option
-list beneath. Categories and items are ordered by the backend's `sortOrder`,
-so the truck controls layout from cgsKitchen rather than per-Pi config. Polled
-every 30s; menus change far less often than orders (mostly via 86'ing), so a
-slow poll keeps the screen current without hammering the backend.
-
-### Option lists
-Each item shows its option groups (Protein, Cheese, Veggies, Sauces, …) with
-every choice listed. A price delta is appended only when nonzero — e.g.
-`Cheese: Cheddar, Swiss, Beer cheese +$1, No cheese`. Free choices show plain;
-discounts show a minus (`No meat -$1`). This advertises the build-your-own
-options without duplicating the POS's full picker.
-
-### 86-aware (the point)
-The board shows the **full** menu and marks what's out rather than hiding it.
-An item with `available: false` stays in place, dimmed, with its name and price
-struck through and a small red "Sold out" tag (its badge and options are hidden
-while out). An individual 86'd **choice** — say Beer cheese sells out — stays in
-its option line struck through, so customers still see it exists but know it's
-unavailable. Un-86 on the POS and it returns to normal on the next poll. This
-is the whole reason the board reads `/api/menu/all` instead of the filtered
-orderable endpoint.
-
-### Badges
-In-stock items carry their backend badge (`Most Loved`, `Top Seller`, `New`)
-in the matching accent color (gold / grass / sea). Badges are hidden on
-sold-out items.
-
-### Connectivity behaviour
-On a drop the board keeps the last good menu on screen rather than blanking the
-display, shows a small stale indicator, and silently resumes when the next poll
-succeeds.
-
-## Why read-only
-
-The customer board is pure output: it shows what's for sale. It holds no cart,
-no order state, and no write path — ordering happens at the POS. Keeping it
-read-only means it can never get into a bad state worth recovering, and a menu
-drop degrades to "show the last menu we saw" rather than an error screen in
-front of a customer.
-
-## Project layout
+No browser. No compositor. No GPU. No Node.
 
 ```
-src/
-  api/client.ts            fetch wrapper (X-API-Key) + fetchMenu (/api/menu/all)
-  lib/config.ts            Vite env config (base url, key, poll, title)
-  lib/format.ts            centsToDollars, displayPrice, choiceDelta
-  types/menu.ts            MenuItemView/OptionGroup/MenuChoice + MenuSection
-  components/MenuSection.vue   category heading + item rows, options, sold-out
-  App.vue                  polls menu, groups by category, orders by sortOrder
-  main.ts                  entry
-  styles.css               theme tokens + global kiosk styles (cursor: none)
+cgsKitchen (Spring, DigitalOcean)
+        │  GET /api/menu/all   [X-API-Key]
+        ▼
+   ApiPoller (background thread)
+        │  MenuItemView[]
+        ▼
+   MenuBoard.render()  →  PIL.Image
+        │
+        ▼
+   Framebuffer.show()  →  mmap → /dev/fb0  →  TV
 ```
 
-There is no `stores/` folder — the board's single poll lives directly in
-`App.vue`, so Pinia isn't pulled in. (The kitchen board uses a store because it
-has more moving state; the menu board doesn't need one.)
+### Why not a browser?
 
-## Develop
+This board was originally a Vue app in Chromium. **On a 512MB Zero 2 W that does not work.** Chromium couldn't get a GPU context (`EGL_BAD_ATTRIBUTE`), fell back to software rendering, and exhausted the board — 84MB RAM free, swap 77% consumed, renderer at 143% CPU, network process pegged at 102% and wedged. Blank screen.
+
+SDL/pygame was tried next and hits the same GPU wall (`EGL not initialized`), with no `fbcon` fallback compiled in.
+
+The framebuffer works because it never touches the GPU: we `mmap` the kernel's buffer and write bytes; the display controller scans them out. Nothing to negotiate, nothing to fail.
+
+---
+
+## Layout
+
+```
+main.py             entry point: poll loop + framebuffer blit
+menu_board.py       the renderer (sections, dotted leaders, 86 handling)
+preview.py          dev tool — render to PNG instead of the framebuffer
+common/
+  config.py         reads /etc/celtech/env at RUNTIME
+  api.py            background poller, last-known-good on drop
+  framebuffer.py    mmap /dev/fb0, RGB565/BGRA packing, rotation
+fonts/              vendored TTFs (Fraunces, Nunito Sans) — committed on purpose
+deploy/
+  cgs-menu.service  systemd unit
+requirements.txt    Pillow + numpy. That's it.
+update.sh           git pull + systemctl restart
+```
+
+---
+
+## Configuration
+
+All config lives in **`/etc/celtech/env`** on the device, read **at runtime** — change it and restart the service; there is no build step.
+
+```ini
+API_BASE_URL=https://celtechgs.kitchen
+API_KEY=<the backend's API key>
+
+# optional
+POLL_SECONDS=30      # default 30 for menu (it changes rarely)
+BOARD_TITLE=Menu     # heading text
+ROTATE=90            # portrait — see below
+```
+
+`/etc/celtech/role` contains `menu`.
+
+### Portrait mode
+
+The menu board is usually mounted **portrait**. Set `ROTATE=90` (or `270`, depending which way you turned the TV) and physically rotate the screen.
+
+Rotation is handled **entirely in software** — no kernel flags, no `config.txt` display settings. The board renders at the swapped canvas size (e.g. 768×1366 portrait) and `framebuffer.py` rotates the finished image onto the panel's native landscape buffer before blitting. The two-column layout rebalances automatically for the narrower canvas.
+
+Preview it before you mount anything:
 
 ```bash
-npm install
-cp .env.example .env       # set VITE_API_BASE_URL, VITE_API_KEY
-npm run dev                # http://localhost:5174
+./preview.py menu --demo --rotate 90 --show
 ```
 
-`VITE_API_KEY` must match the backend `app.api-key`. For local backend dev,
-set `API_KEY` and add `http://localhost:5174` to `CORS_ORIGINS` in the
-cgsKitchen run config. `npm run build` typechecks (vue-tsc) then emits `dist/`.
+---
 
-### Environment variables
+## What it renders
 
-- `VITE_API_BASE_URL` — backend base, e.g. `http://192.168.1.50:8080`
-- `VITE_API_KEY` — must match backend `app.api-key`
-- `VITE_POLL_MS` — menu refresh interval (default 30000)
-- `VITE_BOARD_TITLE` — heading text (default `Menu`)
+Two-column editorial layout. Categories in the backend's `sortOrder`; items within a category likewise. The truck controls the whole layout from cgsKitchen — nothing is configured per-device.
 
-Category and item order is **not** configured here — it follows the backend's
-`sortOrder`, so reordering the menu is done in cgsKitchen and reflected on the
-board on the next poll.
+Each item shows its name, an optional badge (`Most Loved`, `New`, `Top Seller` — colored gold/grass/sea), a dotted leader, and the price. Below it: the description, then the option groups inline (`Cheese: Cheddar, Beer cheese +$1, No cheese`).
 
-## Deploy to the Pi kiosk
+**86'd items** stay in place rather than vanishing — a hole in the menu is confusing, and customers ask about things that aren't there. Instead the item dims, the **name and price are struck through**, a `SOLD OUT` tag appears, and its badge and options are hidden.
 
-The build output is plain static files with **relative** asset paths
-(`base: './'`), so it loads via `file://` exactly like the driver dashboard
-and the POS. Two options:
+**86'd choices** stay in their option line, struck through individually (`Cheese: Cheddar, ~~Beer cheese +$1~~, No cheese`), so customers can see the option exists but isn't available today.
 
-**A. Mirror the driver unit (recommended).** Provision a Pi Zero 2 W with the
-same buildout doc (labwc + systemd autologin + `update.sh` git pull). Build and
-commit `dist/`, or have `update.sh` run `npm ci && npm run build` after the
-pull. Point `launch.sh` at the built file:
+**Prices** are integer cents on the wire; formatted at the edge (`1200 → $12`, `950 → $9.50`). The server's `priceDisplay` is preferred when present, otherwise formatted from `priceCents`.
+
+**Connectivity**: on a network drop the board **keeps the last known menu on screen** rather than blanking, with a quiet `reconnecting…` note. A blank menu board loses sales; a slightly stale one doesn't.
+
+---
+
+## Running
+
+### On the Pi
 
 ```bash
-exec chromium \
-  --kiosk --noerrdialogs --disable-infobars --no-first-run \
-  --ozone-platform=wayland --password-store=basic \
-  --enable-features=UseOzonePlatform \
-  --app=file:///home/druid-mobile/celtech-menu-board/dist/index.html
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python main.py menu
 ```
 
-**B. Serve from the network** and point `--app=` at the URL instead. Simpler
-rebuilds, but then the kiosk needs connectivity to load the shell.
+It prints the panel geometry before drawing — proof it found the framebuffer:
 
-Notes for the Zero 2 W: the app ships tiny (~26 KB gzipped JS, no images) and
-polls slowly, so it idles comfortably. `cursor: none` is set so no pointer
-shows on the customer-facing TV. There is no input — this is display-only.
+```
+framebuffer: 1366x768 @ 16bpp (stride 2732) rotate=90 canvas=768x1366
+```
 
-## Offline-readiness checklist (do before relying on it cold)
+Then install the service:
 
-1. **Self-host fonts.** `styles.css` pulls Fraunces and Nunito Sans from Google
-   Fonts, which needs network on first paint. Vendor the woff2 files and swap
-   for a local `@font-face`. System-ui/Georgia fallbacks already prevent a hard
-   fail, but the board's character depends on the display serif.
-2. **API reachable on the LAN IP.** Keep `VITE_API_BASE_URL` pointed at the
-   backend's LAN IP if serving the shell over the network. Option A (file://)
-   makes the shell itself network-independent; only the menu poll needs the LAN.
+```bash
+sudo cp deploy/cgs-menu.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cgs-menu.service
+```
 
-## Production hardening notes
+The user must be in the **`video`** group (that's who owns `/dev/fb0`):
 
-- The API key ships in the built bundle. Fine for one trusted kiosk on a
-  private network; revisit (per-device key / backend proxy) before any broader
-  rollout. Same posture as the POS.
-- Read-only by construction, so there is no last-write-wins concern — the board
-  makes no changes and can't clobber anything.
+```bash
+sudo usermod -aG video druid && sudo reboot
+```
 
-## Roadmap
+### On a dev laptop
 
-- **Push instead of poll.** If cgsKitchen grows an SSE/WebSocket menu/inventory
-  stream, swap the 30s poll for a subscription so an 86 reflects instantly.
-- **Prices/specials styling.** Featured-item callouts, daily-special ribbon,
-  per-category imagery if the menu DTO grows image URLs.
-- **Multi-screen layout.** A wide or portrait variant for different screen
-  orientations; the two-column layout already collapses to one column on
-  narrow viewports.
-- **Self-hosted fonts** for full cold-start independence (see checklist).
-- **Branding.** Logo in the header, favicon.
+`main.py` **will not run** on a desktop machine — the compositor owns `/dev/fb0` and you'll get `PermissionError`. That's correct, not a bug. Use `preview.py`, which runs the *same* renderer and writes a PNG:
+
+```bash
+./preview.py menu --demo --show                # fake data, no backend needed
+./preview.py menu --demo --rotate 90 --show    # preview portrait
+./preview.py menu --show                       # live, against /etc/celtech/env
+./preview.py menu --watch                      # re-render every few seconds
+```
+
+What you see in the PNG is pixel-for-pixel what the TV shows.
+
+---
+
+## Updating
+
+```bash
+./update.sh menu
+```
+
+Fetches `main`, resets to it, restarts the service. **No npm, no build, no swap.**
+
+---
+
+## Gotchas
+
+**Seeing "Hello from the pygame community"?** You're running old code. The framebuffer version imports no pygame. Check `grep -c pygame main.py` (must be `0`) and that `common/framebuffer.py` exists while `common/display.py` does not.
+
+**Zero 2 W is 2.4GHz-only.** No 5GHz radio. If the SSID isn't broadcasting 2.4GHz, the unit silently never appears on the network.
+
+**Reimaged?** `ssh-keygen -R druid-menu.local` — new host keys.
+
+**Provision on bench WiFi**, not the truck's cellular router. The old Vue stack burned ~5GB of SIM data on `npm ci`. This one downloads ~20MB once, then a few KB per poll.
+
+---
+
+## Backend contract
+
+`GET /api/menu/all` → `MenuItemView[]`, header `X-API-Key`.
+
+```ts
+MenuItemView {
+  id: string
+  name: string
+  description: string | null
+  priceCents: number            // integer cents on the wire
+  priceDisplay: string | null   // server-formatted; often null
+  categoryId: string
+  categoryName: string
+  badgeLabel: string | null
+  badgeColor: 'gold' | 'grass' | 'sea' | null
+  available: boolean            // false = 86'd
+  sortOrder: number
+  optionGroups: OptionGroup[]   // each with choices[] { label, priceDeltaCents, available }
+}
+```
+
+The board groups the flat array into sections by `categoryId` and orders everything by `sortOrder`.

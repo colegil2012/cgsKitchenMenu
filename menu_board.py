@@ -29,6 +29,9 @@ BADGE = {
 
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
+ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+LOGO_PATH = os.path.join(ASSET_DIR, "logo.png")
+
 
 # ---- format.ts port ----------------------------------------------------
 def cents_to_dollars(cents):
@@ -69,15 +72,23 @@ class MenuBoard:
             return ImageFont.truetype(os.path.join(FONT_DIR, "NunitoSans.ttf"),
                                       max(9, int(px * s)))
 
-        self.f_title   = F(40)
-        self.f_section = F(31)
-        self.f_item    = N(24)
-        self.f_price   = F(24)
-        self.f_desc    = N(16)
-        self.f_opt     = N(14)
-        self.f_badge   = N(11)
-        self.f_status  = N(13)
-        self.pad = int(34 * s)
+        self.f_title   = F(25)
+        self.f_section = F(20)
+        self.f_item    = N(15)
+        self.f_price   = F(12)
+        self.f_desc    = N(9)
+        self.f_opt     = N(10)
+        self.f_badge   = N(6)
+        self.f_status  = N(10)
+        self.pad = int(24 * s)
+
+        self.logo = None
+        if os.path.exists(LOGO_PATH):
+            logo = Image.open(LOGO_PATH).convert("RGBA")
+            target_h = int(120 * s)
+            ratio = target_h / logo.height
+            self.logo = logo.resize(
+                (max(1, int(logo.width * ratio)), target_h), Image.LANCZOS)
 
     def _tw(self, d, f, t):
         return d.textbbox((0, 0), str(t), font=f)[2]
@@ -243,13 +254,26 @@ class MenuBoard:
         d = ImageDraw.Draw(img)
         s = self.s
 
-        d.text((self.pad, int(14 * s)), self.title, font=self.f_title, fill=ACCENT)
+        tx, ty = self.pad, int(14 * s)
+        # centered header logo
+        head_top = int(18 * s)
+        if self.logo:
+            lx = (self.w - self.logo.width) // 2
+            img.paste(self.logo, (lx, head_top), self.logo)
+            head_bottom = head_top + self.logo.height
+        else:
+            # fallback: centered title text if the logo is missing
+            tw = self._tw(d, self.f_title, self.title)
+            d.text(((self.w - tw) // 2, head_top), self.title,
+                   font=self.f_title, fill=ACCENT)
+            head_bottom = head_top + self._th(self.f_title)
+
         if not online:
             t = "reconnecting…"
-            d.text((self.w - self.pad - self._tw(d, self.f_status, t), int(28 * s)),
+            d.text((self.w - self.pad - self._tw(d, self.f_status, t), int(18 * s)),
                    t, font=self.f_status, fill=_dim(INK_DIM, .8))
 
-        top = int(14 * s) + self._th(self.f_title) + int(16 * s)
+        top = head_bottom + int(20 * s)
         gap = int(40 * s)
         col_w = (self.w - self.pad * 2 - gap) // 2
         cols = [self.pad, self.pad + col_w + gap]
